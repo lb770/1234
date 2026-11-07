@@ -1,0 +1,45 @@
+name: Fetch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    paths:
+      - 'main.go'
+      - 'go.mod'
+      - 'go.sum'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '^1.24.0'
+
+      - name: Fetch Proxy IP list
+        run: curl https://zip.baipiao.eu.org > txt.zip
+
+      - name: Generate list
+        run: go run . -thread 64 txt.zip
+
+      - name: Commit changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git pull origin main
+          git add list.txt
+          git commit -m "Update list at $(date '+%Y-%m-%d %H:%M:%S')"
+
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.ref }}
