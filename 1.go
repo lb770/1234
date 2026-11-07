@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,6 +20,7 @@ import (
 	tls "github.com/refraction-networking/utls"
 	"golang.org/x/net/proxy"
 )
+
 
 var (
 	outputFile  string
