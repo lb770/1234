@@ -21,12 +21,12 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-
 var (
 	outputFile  string
 	threadNum   int
 	defaultPort string
 	timeoutSec  int
+	debugMode   bool
 	ipPortRegex = regexp.MustCompile(`^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})(?:[:,\s]+(\d{1,5}))?`)
 )
 
@@ -35,6 +35,7 @@ func init() {
 	flag.IntVar(&threadNum, "thread", 16, "最大并发线程数")
 	flag.StringVar(&defaultPort, "port", "443", "默认端口(当输入未指定端口时使用)")
 	flag.IntVar(&timeoutSec, "timeout", 5, "超时时间(秒)")
+	flag.BoolVar(&debugMode, "debug", false, "显示详细的失败调试信息")
 	flag.Parse()
 }
 
@@ -110,17 +111,18 @@ func parseLines(r io.Reader) []string {
 	return targets
 }
 
-func testWorker(dialer proxy.Dialer, target string) (string, time.Duration, bool) {
+func testWorker(dialer proxy.Dialer, target string) (string, time.Duration, error) {
 	start := time.Now()
 	tr := &http.Transport{
 		DialTLSContext: func(_ context.Context, network, _ string) (net.Conn, error) {
 			conn, err := dialer.Dial(network, target)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("TCP/代理建立失败: %w", err)
 			}
-			return tls.UClient(conn, &tls.Config{
+			tlsConn := tls.UClient(conn, &tls.Config{
 				ServerName: "speed.cloudflare.com",
-			}, tls.HelloChrome_Auto), nil
+			}, tls.HelloChrome_Auto)
+			return tlsConn, nil
 		},
 	}
 	client := &http.Client{
@@ -130,39 +132,43 @@ func testWorker(dialer proxy.Dialer, target string) (string, time.Duration, bool
 
 	req, err := http.NewRequest(http.MethodGet, "https://speed.cloudflare.com/cdn-cgi/trace", nil)
 	if err != nil {
-		return "", 0, false
+		return "", 0, fmt.Errorf("构造请求失败: %w", err)
 	}
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", 0, false
+		return "", 0, fmt.Errorf("TLS握手/请求超时: %w", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return "", 0, fmt.Errorf("HTTP 状态码异常: %d", resp.StatusCode)
+	}
+
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", 0, false
+		return "", 0, fmt.Errorf("读取 Body 失败: %w", err)
 	}
 
 	latency := time.Since(start)
 	if strings.Contains(string(data), "h=speed.cloudflare.com") {
-		return target, latency, true
+		return target, latency, nil
 	}
-	return "", 0, false
+	return "", 0, fmt.Errorf("响应非 CF Trace 标志数据")
 }
 
 func main() {
 	input := flag.Arg(0)
 	if input == "" {
-		log.Fatal("错误: 请提供输入文件路径或 URL URL/CSV/TXT/ZIP\n用法: ./cf-tester [选项] <文件路径或URL>")
+		log.Fatal("错误: 请提供输入文件路径或 URL\n用法: ./cf-tester -debug [其他选项] <文件路径或URL>")
 	}
 
 	targets, err := readTargets(input)
 	if err != nil {
 		log.Fatalf("读取目标失败: %v", err)
 	}
-	log.Printf("[+] 成功加载 %d 个待测目标，开始测试 (线程: %d)...\n", len(targets), threadNum)
+	log.Printf("[+] 成功加载 %d 个待测目标，开始测试 (线程: %d, Debug: %v)...\n", len(targets), threadNum, debugMode)
 
 	out, err := os.Create(outputFile)
 	if err != nil {
@@ -184,12 +190,16 @@ func main() {
 				<-sem
 				wg.Done()
 			}()
-			if res, latency, ok := testWorker(dialer, t); ok {
-				lock.Lock()
+			res, latency, err := testWorker(dialer, t)
+			lock.Lock()
+			defer lock.Unlock()
+
+			if err == nil {
 				validCount++
 				fmt.Printf("[可用] %-21s 延迟: %v\n", res, latency)
 				out.WriteString(res + "\n")
-				lock.Unlock()
+			} else if debugMode {
+				fmt.Printf("[失败] %-21s 原因: %v\n", t, err)
 			}
 		}(target)
 	}
