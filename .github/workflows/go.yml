@@ -1,28 +1,29 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go
+name: Build Go
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
 
 jobs:
-
   build:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
         go-version: '1.23'
 
-    - name: Build
-      run: go build -v ./...
+    - name: Install dependencies & Build
+      run: |
+        go mod tidy
+        go build -v -o cf-tester ./1.go
 
-    - name: Test
-      run: go test -v ./...
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: cf-tester-linux
+        path: cf-tester
